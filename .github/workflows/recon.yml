@@ -2,7 +2,7 @@ name: BugBounty Subdomain Monitor
 
 on:
   schedule:
-    - cron: '0 */6 * * *' # 6시간마다 자동으로 실행
+    - cron: '0 */12 * * *' # 12시간마다 자동으로 실행
   workflow_dispatch: # 수동 실행 버튼
 
 jobs:
@@ -46,14 +46,19 @@ jobs:
           echo "target.com" > targets.txt
         fi
         
-        # 신규 도메인 수집 및 벌크 전송
+        # 1. 신규 도메인을 patch.txt에 모읍니다.
         subfinder -dL targets.txt -silent | anew domains_old.txt > patch.txt
         
+        # 2. 신규 도메인이 존재할 때 (patch.txt 파일 크기가 0보다 크면)
         if [ -s patch.txt ]; then
           echo "[+] 신규 서브도메인 발견! 알림을 전송합니다."
           cat patch.txt | notify -silent
         else
+          # 3. [수정된 부분] 신규 도메인이 없을 때 디스코드에 안내 메시지를 보냅니다.
           echo "[-] 새로 발견된 서브도메인이 없습니다."
+          
+          # 간단한 텍스트 문구를 생성하여 notify로 전달합니다.
+          echo "🔍 **[Subdomain Monitor]** 새로운 서브도메인이 발견되지 않았습니다. (정상 작동 중)" | notify -silent
         fi
         
         rm -f patch.txt
