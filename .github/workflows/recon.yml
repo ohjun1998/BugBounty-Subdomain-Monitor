@@ -43,32 +43,33 @@ jobs:
         echo "$NOTIFY_CONFIG" > ~/.config/notify/provider-config.yaml
         [ ! -s "targets.txt" ] && echo "naver.com" > targets.txt
 
-        # 1. [PASSIVE] 모든 소스에서 서브도메인 및 URL 일괄 수집 (초고속)
+        # 1. [PASSIVE] 모든 소스에서 서브도메인 및 URL 일괄 수집
         echo "[+] 서브도메인 및 패시브 URL 수집 중..."
         subfinder -dL targets.txt -silent | anew domains_old.txt > raw_patch.txt
         
         if [ -s raw_patch.txt ]; then
-          # 모든 루트 도메인에 대해 Katana/Wayback 결과 미리 모으기
           touch all_passive_urls.txt
           while read -r root; do
             root=$(echo "$root" | xargs)
             [ -z "$root" ] && continue
             
-            # Katana & Wayback 병렬 수집 및 필터링
-            katana -u "$root" -passive -silent -field url >> all_passive_urls.txt &
-            echo "$root" | waybackurls >> all_passive_urls.txt &
+            # [최적화 패치 A] Katana에 -automatic-scoping 옵션을 주어 엉뚱한 외부 사이트로 빠지는 걸 막고, 
+            # 리눅스 timeout 45 명령어를 결합하여 아무리 길어도 45초 뒤엔 강제 종료시킵니다.
+            timeout 45s katana -u "$root" -passive -automatic-scoping -silent -field url >> all_passive_urls.txt &
+            
+            # [최적화 패치 B] Waybackurls 역시 특정 도메인에 데이터가 너무 많으면 45초만 긁고 끊어버립니다.
+            timeout 45s sh -c "echo '$root' | waybackurls" >> all_passive_urls.txt &
           done < targets.txt
-          wait # 모든 패시브 수집 완료 대기
+          wait # 최대 45초 대기 후 무조건 다음 단계 진입
 
           # 민감 확장자 필터링 및 노이즈 제거 (일괄 처리)
           grep -Ei "\.(env|log|bak|sql|ini|git|conf|zip|tar|gz|yaml|yml|old|bkp|pwd)$|dashboard|admin|login|portal|config|swagger|api-docs|index-of" all_passive_urls.txt \
             | grep -Eiv "\.(png|jpg|jpeg|gif|css|js|woff|woff2|svg|ico|font)$" \
             | sort -u > filtered_urls.txt || true
 
-          # 2. [BATCH CHECK] httpx 단 한 번만 실행 (속도의 핵심)
+          # 2. [BATCH CHECK] httpx 단 한 번만 실행
           echo "[+] 수집된 모든 자산 실시간 응답 코드 확인 중 (Batch)..."
           cat raw_patch.txt filtered_urls.txt | sort -u > total_scan_list.txt
-          # 스레드 200개, 타임아웃 2초로 극강의 속도 발휘
           cat total_scan_list.txt | httpx -sc -silent -t 200 -timeout 2 -retries 0 -no-color > live_results.txt || true
 
           # 3. [REPORTING] 결과 조립 (매칭)
@@ -81,7 +82,6 @@ jobs:
             root=$(echo "$root" | xargs)
             [ -z "$root" ] && continue
             
-            # 현재 루트 도메인에 속하는 서브도메인만 추출
             grep -E "\.${root}$|^${root}$" raw_patch.txt | sort > temp_subs.txt || true
             
             if [ -s temp_subs.txt ]; then
@@ -90,7 +90,6 @@ jobs:
               echo "--------------------------------------------" >> $REPORT_FILE
               
               while read -r sub; do
-                # 미리 만들어둔 live_results.txt에서 결과값만 쏙 뽑아옴 (네트워크 요청 없음)
                 RES=$(grep -i "^http.*$sub" live_results.txt | head -n 1)
                 if [ -z "$RES" ]; then
                   echo "🌐 $sub [No Response]" >> $REPORT_FILE
@@ -98,7 +97,6 @@ jobs:
                   echo "🌐 $RES" >> $REPORT_FILE
                 fi
                 
-                # 해당 서브도메인의 Dork/Wayback 결과 매칭
                 grep -i "$sub" filtered_urls.txt | sort -u | while read -r d_url; do
                   D_RES=$(grep -iF "$d_url" live_results.txt | head -n 1)
                   [ -n "$D_RES" ] && echo "   ↳ 🔍 Found: $D_RES" >> $REPORT_FILE
