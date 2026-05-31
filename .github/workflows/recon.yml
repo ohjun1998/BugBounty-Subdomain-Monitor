@@ -2,7 +2,7 @@ name: BugBounty Subdomain Monitor
 
 on:
   schedule:
-    - cron: '0 3,9 * * *' # 매일 오후 18시(한국 시간)에 자동으로 실행
+    - cron: '0 3,9 * * *' # 매일 12시, 18시(한국 시간)에 자동으로 실행
   workflow_dispatch: # 수동 실행 버튼
 
 jobs:
@@ -33,6 +33,8 @@ jobs:
         go install -v github.com/projectdiscovery/notify/cmd/notify@latest
         go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
         go install -v github.com/projectdiscovery/katana/cmd/katana@latest
+        # [신규 추가] 과거 아카이브 URL 수집을 위한 waybackurls 설치
+        go install -v github.com/tomnomnom/waybackurls@latest
 
     - name: Run Recon Pipeline
       env:
@@ -49,13 +51,13 @@ jobs:
         # 1. 신규 서브도메인 수집
         subfinder -dL targets.txt -t 100 -timeout 5 -silent | anew domains_old.txt > raw_patch.txt
         
-        # 2. 신규 자산 분석 진입
+        # 2. 신규 자산 정밀 분석 진입
         if [ -s raw_patch.txt ]; then
-          echo "[+] 신규 자산 식별 및 효율화된 구글 도킹 정찰을 시작합니다."
+          echo "[+] 신규 자산 식별 및 구글 도킹 + Wayback 정찰을 시작합니다."
           
           REPORT_FILE="New_Subdomains_Report.txt"
           
-          echo "========= 🚀 신규 자산 식별 리포트 =========" > $REPORT_FILE
+          echo "========= 🚀 종합 자산 식별 리포트 =========" > $REPORT_FILE
           echo "스캔 일시: $(date)" >> $REPORT_FILE
           echo "============================================" >> $REPORT_FILE
           echo "" >> $REPORT_FILE
@@ -70,20 +72,26 @@ jobs:
               echo "📌 [Root: $root_domain]" >> $REPORT_FILE
               echo "--------------------------------------------" >> $REPORT_FILE
               
-              # [효율화 패치] 대소문자 무시(-i), 노이즈 유발 정적 파일 확장자 역필터링(-v) 적용
+              # A. 루트 도메인 기준 전체 구글 도킹 수집 및 노이즈 제거
               katana -u "$root_domain" -passive -silent -field url \
                 | grep -Ei "\.(env|log|bak|sql|ini|git|conf|zip|tar|gz|yaml|yml|old|bkp|pwd)$|dashboard|admin|login|portal|config|swagger|api-docs|index-of" \
                 | grep -Eiv "\.(png|jpg|jpeg|gif|css|js|woff|woff2|svg|ico|font)$" \
                 | sort -u > temp_all_dorks.txt
               
+              # B. [신규 추가] 루트 도메인 기준 과거 아카이브 URL 수집 및 노이즈 제거
+              echo "$root_domain" | waybackurls \
+                | grep -Ei "\.(env|log|bak|sql|ini|git|conf|zip|tar|gz|yaml|yml|old|bkp|pwd)$|dashboard|admin|login|portal|config|swagger|api-docs|index-of" \
+                | grep -Eiv "\.(png|jpg|jpeg|gif|css|js|woff|woff2|svg|ico|font)$" \
+                | sort -u > temp_all_wayback.txt
+              
+              # 서브도메인별 매칭 루프
               while IFS= read -r sub_domain || [ -n "$sub_domain" ]; do
                 [ -z "$sub_domain" ] && continue
                 
-                # A. 서브도메인 메인 주소 응답코드 확인
+                # 메인 주소 응답코드 확인
                 echo "🌐 $(echo "$sub_domain" | httpx -sc -silent -t 10 -timeout 3 -retries 0 | sed 's/\x1b\[[0-9;]*m//g')" >> $REPORT_FILE
                 
-                # B. [효율화 패치] 솎아낸 도킹 URL들을 그냥 열거하지 않고, 
-                # httpx를 한 번 더 태워서 현재 진짜 살아있는 주소인지 검증하여 응답코드와 함께 표기합니다.
+                # ① 구글 도킹 결과 실시간 유효성 검증 및 출력
                 grep -i "$sub_domain" temp_all_dorks.txt > temp_sub_dorks.txt
                 if [ -s temp_sub_dorks.txt ]; then
                   cat temp_sub_dorks.txt \
@@ -95,19 +103,32 @@ jobs:
                 fi
                 rm -f temp_sub_dorks.txt
                 
+                # ② [신규 추가] Waybackurls 결과 실시간 유효성 검증 및 출력
+                grep -i "$sub_domain" temp_all_wayback.txt > temp_sub_wayback.txt
+                if [ -s temp_sub_wayback.txt ]; then
+                  cat temp_sub_wayback.txt \
+                    | httpx -sc -silent -t 10 -timeout 3 -retries 0 \
+                    | sed 's/\x1b\[[0-9;]*m//g' \
+                    | while read -r validated_wayback; do
+                      echo "   ↳ ⏳ Wayback: $validated_wayback" >> $REPORT_FILE
+                    done
+                fi
+                rm -f temp_sub_wayback.txt
+                
                 echo "" >> $REPORT_FILE
               done < temp_group.txt
               
               echo "============================================" >> $REPORT_FILE
               echo "" >> $REPORT_FILE
-              rm -f temp_all_dorks.txt
+              rm -f temp_all_dorks.txt temp_all_wayback.txt
             fi
           done < targets.txt
           
           rm -f temp_group.txt
           
+          # 3. 디스코드 API로 완벽하게 전송
           curl -H "Content-Type: multipart/form-data" \
-               -F "content=🔥 **[Subdomain Monitor]** 스캔 완료! 노이즈가 제거되고 유효성이 검증된 실시간 도킹 리포트를 확인하세요." \
+               -F "content=🔥 **[Subdomain Monitor]** 정기 스캔 완료! 구글 도킹과 Wayback 아카이브 교차 검증 리포트가 배달되었습니다." \
                -F "file=@./$REPORT_FILE" \
                "$DISCORD_URL"
                
