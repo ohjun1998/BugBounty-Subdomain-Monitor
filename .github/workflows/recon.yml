@@ -39,6 +39,9 @@ jobs:
         NOTIFY_CONFIG: ${{ secrets.NOTIFY_SECRET }}
         DISCORD_URL: ${{ secrets.DISCORD_WEBHOOK }}
       run: |
+        # 엄격한 에러 중단 모드를 해제하여 자잘한 쉘 경고/오류로 빌드가 터지는 것을 방지
+        set +e
+        
         mkdir -p ~/.config/notify
         echo "$NOTIFY_CONFIG" > ~/.config/notify/provider-config.yaml
         
@@ -53,7 +56,7 @@ jobs:
 
         # 1. 서브도메인 수집
         echo "[+] 서브도메인 및 패시브 URL 수집 중..."
-        (subfinder -dL targets.txt -silent || true) | (anew domains_old.txt > raw_patch.txt || true)
+        subfinder -dL targets.txt -silent | anew domains_old.txt > raw_patch.txt
         
         # 2. 분석 진입
         if [ -s raw_patch.txt ]; then
@@ -69,7 +72,7 @@ jobs:
           if [ -s all_passive_urls.txt ]; then
             grep -Ei "\.(env|log|bak|sql|ini|git|conf|zip|tar|gz|yaml|yml|old|bkp|pwd)$|dashboard|admin|login|portal|config|swagger|api-docs|index-of" all_passive_urls.txt \
               | grep -Eiv "\.(png|jpg|jpeg|gif|css|js|woff|woff2|svg|ico|font)$" \
-              | sort -u > filtered_urls.txt || true
+              | sort -u > filtered_urls.txt
           fi
 
           # 3. httpx 검증
@@ -80,11 +83,8 @@ jobs:
           fi
           sort -u total_scan_list.txt -o total_scan_list.txt
 
-          # [가장 핵심적인 수정] 
-          # httpx 실행 라인을 전체 서브쉘 ( )로 감싸고 뒤에 || true를 명시하여, 
-          # 응답이 오는 도메인이 0개여서 httpx가 내부 에러 코드 1을 반환해도 파이프라인이 멈추지 않게 방어합니다.
           if [ -s total_scan_list.txt ]; then
-            (cat total_scan_list.txt | httpx -sc -silent -t 200 -timeout 2 -retries 0 -no-color > live_results.txt) || true
+            cat total_scan_list.txt | httpx -sc -silent -t 200 -timeout 2 -retries 0 -no-color > live_results.txt
           fi
 
           # 4. 리포트 조립
@@ -98,7 +98,7 @@ jobs:
             [ -z "$root" ] && continue
             
             touch temp_subs.txt
-            grep -E "\.${root}$|^${root}$" raw_patch.txt | sort > temp_subs.txt || true
+            grep -E "\.${root}$|^${root}$" raw_patch.txt | sort > temp_subs.txt
             
             if [ -s temp_subs.txt ]; then
               echo "" >> $REPORT_FILE
@@ -109,11 +109,7 @@ jobs:
                 sub=$(echo "$sub" | xargs)
                 [ -z "$sub" ] && continue
 
-                RES=""
-                if [ -s live_results.txt ]; then
-                  RES=$(grep -i "^http.*$sub" live_results.txt | head -n 1 || true)
-                fi
-
+                RES=$(grep -i "^http.*$sub" live_results.txt | head -n 1)
                 if [ -z "$RES" ]; then
                   echo "🌐 $sub [No Response]" >> $REPORT_FILE
                 else
@@ -122,10 +118,7 @@ jobs:
                 
                 if [ -s filtered_urls.txt ]; then
                   grep -i "$sub" filtered_urls.txt | sort -u | while read -r d_url; do
-                    D_RES=""
-                    if [ -s live_results.txt ]; then
-                      D_RES=$(grep -iF "$d_url" live_results.txt | head -n 1 || true)
-                    fi
+                    D_RES=$(grep -iF "$d_url" live_results.txt | head -n 1)
                     [ -n "$D_RES" ] && echo "   ↳ 🔍 Found: $D_RES" >> $REPORT_FILE
                   done
                 fi
@@ -134,13 +127,14 @@ jobs:
             rm -f temp_subs.txt
           done < targets.txt
 
+          # 디스코드 전송
           curl -H "Content-Type: multipart/form-data" \
                -F "content=🔥 **[Subdomain Monitor]** 초고속 최적화 스캔 완료! 새로운 취약성 자산이 발견되었습니다." \
                -F "file=@./$REPORT_FILE" \
-               "$DISCORD_URL" || echo "Discord Send Failed"
+               "$DISCORD_URL"
         else
           echo "[-] 새로 발견된 서브도메인이 없습니다."
-          echo "🔍 **[Subdomain Monitor]** 새로운 서브도메인이 발견되지 않았습니다. (정상 작동 중)" | notify -silent || true
+          echo "🔍 **[Subdomain Monitor]** 새로운 서브도메인이 발견되지 않았습니다. (정상 작동 중)" | notify -silent
         fi
 
         rm -f raw_patch.txt all_passive_urls.txt filtered_urls.txt total_scan_list.txt live_results.txt temp_subs.txt New_Subdomains_Report.txt || true
