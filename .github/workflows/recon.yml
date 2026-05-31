@@ -33,7 +33,6 @@ jobs:
         go install -v github.com/projectdiscovery/notify/cmd/notify@latest
         go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
         go install -v github.com/projectdiscovery/katana/cmd/katana@latest
-        # [신규 추가] 과거 아카이브 URL 수집을 위한 waybackurls 설치
         go install -v github.com/tomnomnom/waybackurls@latest
 
     - name: Run Recon Pipeline
@@ -47,6 +46,9 @@ jobs:
         if [ ! -f "targets.txt" ] || [ ! -s "targets.txt" ]; then
           echo "target.com" > targets.txt
         fi
+        
+        # 임시 파일 초기화 생성 (에러 방지용)
+        touch raw_patch.txt temp_group.txt temp_all_dorks.txt temp_all_wayback.txt
         
         # 1. 신규 서브도메인 수집
         subfinder -dL targets.txt -t 100 -timeout 5 -silent | anew domains_old.txt > raw_patch.txt
@@ -66,65 +68,71 @@ jobs:
             root_domain=$(echo "$root_domain" | tr -d '\r' | xargs)
             [ -z "$root_domain" ] && continue
             
-            grep -E "\.${root_domain}$|^${root_domain}$" raw_patch.txt | sort > temp_group.txt
+            grep -E "\.${root_domain}$|^${root_domain}$" raw_patch.txt | sort > temp_group.txt || true
             
             if [ -s temp_group.txt ]; then
               echo "📌 [Root: $root_domain]" >> $REPORT_FILE
               echo "--------------------------------------------" >> $REPORT_FILE
               
-              # A. 루트 도메인 기준 전체 구글 도킹 수집 및 노이즈 제거
+              # A. 구글 도킹 수집 및 에러 방지 처리 (|| true)
               katana -u "$root_domain" -passive -silent -field url \
                 | grep -Ei "\.(env|log|bak|sql|ini|git|conf|zip|tar|gz|yaml|yml|old|bkp|pwd)$|dashboard|admin|login|portal|config|swagger|api-docs|index-of" \
                 | grep -Eiv "\.(png|jpg|jpeg|gif|css|js|woff|woff2|svg|ico|font)$" \
-                | sort -u > temp_all_dorks.txt
+                | sort -u > temp_all_dorks.txt || true
               
-              # B. [신규 추가] 루트 도메인 기준 과거 아카이브 URL 수집 및 노이즈 제거
+              # B. Waybackurls 수집 및 에러 방지 처리 (|| true)
               echo "$root_domain" | waybackurls \
                 | grep -Ei "\.(env|log|bak|sql|ini|git|conf|zip|tar|gz|yaml|yml|old|bkp|pwd)$|dashboard|admin|login|portal|config|swagger|api-docs|index-of" \
                 | grep -Eiv "\.(png|jpg|jpeg|gif|css|js|woff|woff2|svg|ico|font)$" \
-                | sort -u > temp_all_wayback.txt
+                | sort -u > temp_all_wayback.txt || true
               
               # 서브도메인별 매칭 루프
               while IFS= read -r sub_domain || [ -n "$sub_domain" ]; do
+                sub_domain=$(echo "$sub_domain" | xargs)
                 [ -z "$sub_domain" ] && continue
                 
                 # 메인 주소 응답코드 확인
                 echo "🌐 $(echo "$sub_domain" | httpx -sc -silent -t 10 -timeout 3 -retries 0 | sed 's/\x1b\[[0-9;]*m//g')" >> $REPORT_FILE
                 
-                # ① 구글 도킹 결과 실시간 유효성 검증 및 출력
-                grep -i "$sub_domain" temp_all_dorks.txt > temp_sub_dorks.txt
-                if [ -s temp_sub_dorks.txt ]; then
-                  cat temp_sub_dorks.txt \
-                    | httpx -sc -silent -t 10 -timeout 3 -retries 0 \
-                    | sed 's/\x1b\[[0-9;]*m//g' \
-                    | while read -r validated_dork; do
-                      echo "   ↳ 🔍 Dork: $validated_dork" >> $REPORT_FILE
-                    done
+                # ① 구글 도킹 결과 매칭 검증
+                if [ -s temp_all_dorks.txt ]; then
+                  grep -i "$sub_domain" temp_all_dorks.txt > temp_sub_dorks.txt || true
+                  if [ -s temp_sub_dorks.txt ]; then
+                    cat temp_sub_dorks.txt \
+                      | httpx -sc -silent -t 10 -timeout 3 -retries 0 \
+                      | sed 's/\x1b\[[0-9;]*m//g' \
+                      | while read -r validated_dork; do
+                        echo "   ↳ 🔍 Dork: $validated_dork" >> $REPORT_FILE
+                      done || true
+                  fi
+                  rm -f temp_sub_dorks.txt
                 fi
-                rm -f temp_sub_dorks.txt
                 
-                # ② [신규 추가] Waybackurls 결과 실시간 유효성 검증 및 출력
-                grep -i "$sub_domain" temp_all_wayback.txt > temp_sub_wayback.txt
-                if [ -s temp_sub_wayback.txt ]; then
-                  cat temp_sub_wayback.txt \
-                    | httpx -sc -silent -t 10 -timeout 3 -retries 0 \
-                    | sed 's/\x1b\[[0-9;]*m//g' \
-                    | while read -r validated_wayback; do
-                      echo "   ↳ ⏳ Wayback: $validated_wayback" >> $REPORT_FILE
-                    done
+                # ② Waybackurls 결과 매칭 검증
+                if [ -s temp_all_wayback.txt ]; then
+                  grep -i "$sub_domain" temp_all_wayback.txt > temp_sub_wayback.txt || true
+                  if [ -s temp_sub_wayback.txt ]; then
+                    cat temp_sub_wayback.txt \
+                      | httpx -sc -silent -t 10 -timeout 3 -retries 0 \
+                      | sed 's/\x1b\[[0-9;]*m//g' \
+                      | while read -r validated_wayback; do
+                        echo "   ↳ ⏳ Wayback: $validated_wayback" >> $REPORT_FILE
+                      done || true
+                  fi
+                  rm -f temp_sub_wayback.txt
                 fi
-                rm -f temp_sub_wayback.txt
                 
                 echo "" >> $REPORT_FILE
               done < temp_group.txt
               
               echo "============================================" >> $REPORT_FILE
               echo "" >> $REPORT_FILE
-              rm -f temp_all_dorks.txt temp_all_wayback.txt
             fi
+            
+            # 루프가 끝날 때마다 안전하게 초기화
+            echo "" > temp_all_dorks.txt
+            echo "" > temp_all_wayback.txt
           done < targets.txt
-          
-          rm -f temp_group.txt
           
           # 3. 디스코드 API로 완벽하게 전송
           curl -H "Content-Type: multipart/form-data" \
@@ -138,7 +146,8 @@ jobs:
           echo "🔍 **[Subdomain Monitor]** 새로운 서브도메인이 발견되지 않았습니다. (정상 작동 중)" | notify -silent
         fi
         
-        rm -f raw_patch.txt
+        # 최종 파일 청소
+        rm -f raw_patch.txt temp_group.txt temp_all_dorks.txt temp_all_wayback.txt
         
     - name: Commit & Push changes
       run: |
