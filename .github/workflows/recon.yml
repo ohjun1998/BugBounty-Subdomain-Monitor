@@ -1,0 +1,41 @@
+name: BugBounty Subdomain Monitor
+
+on:
+  schedule:
+    - cron: '0 */6 * * *' # 6시간마다 자동으로 실행
+
+jobs:
+  recon:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: 'stable'
+
+    - name: Install Tools
+      run: |
+        go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+        go install -v github.com/tomnomnom/anew@latest
+        go install -v github.com/projectdiscovery/notify/cmd/notify@latest
+
+    - name: Run Recon Pipeline
+      env:
+        NOTIFY_CONFIG: ${{ secrets.NOTIFY_SECRET }}
+      run: |
+        mkdir -p ~/.config/notify
+        echo "$NOTIFY_CONFIG" > ~/.config/notify/provider-config.yaml
+        
+        # -d 대신 -dL을 사용하여 targets.txt에 있는 모든 도메인을 한 번에 스캔합니다.
+        subfinder -dL targets.txt -silent | anew domains_old.txt | notify -silent
+        
+    - name: Commit & Push changes # 새로 발견된 도메인 깃허브에 업데이트
+      run: |
+        git config --local user.email "actions@github.com"
+        git config --local user.name "GitHub Actions"
+        git add domains_old.txt
+        git commit -m "Update domains_old.txt [skip ci]" || echo "No changes to commit"
+        git push
