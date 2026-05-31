@@ -2,7 +2,7 @@ name: BugBounty Subdomain Monitor
 
 on:
   schedule:
-    - cron: '0 9 * * *' # 12시간마다 자동으로 실행
+    - cron: '0 9 * * *' # 매일 오후 18시(한국 시간)에 자동으로 실행
   workflow_dispatch: # 수동 실행 버튼
 
 jobs:
@@ -31,11 +31,13 @@ jobs:
         go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
         go install -v github.com/tomnomnom/anew@latest
         go install -v github.com/projectdiscovery/notify/cmd/notify@latest
+        # [신규 추가] 웹 탐색 및 응답 코드 수집 툴인 httpx를 설치합니다.
+        go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
 
     - name: Run Recon Pipeline
       env:
         NOTIFY_CONFIG: ${{ secrets.NOTIFY_SECRET }}
-        DISCORD_URL: ${{ secrets.DISCORD_WEBHOOK }} # 1단계에서 새로 만든 순정 웹훅 주소 연결
+        DISCORD_URL: ${{ secrets.DISCORD_WEBHOOK }}
       run: |
         mkdir -p ~/.config/notify
         echo "$NOTIFY_CONFIG" > ~/.config/notify/provider-config.yaml
@@ -47,9 +49,9 @@ jobs:
         # 1. 신규 도메인을 raw_patch.txt에 모읍니다.
         subfinder -dL targets.txt -t 100 -timeout 5 -silent | anew domains_old.txt > raw_patch.txt
         
-        # 2. 신규 도메인이 존재할 때만 정렬 리포트를 작성합니다.
+        # 2. 신규 도메인이 존재할 때만 정렬 및 httpx 조회를 시작합니다.
         if [ -s raw_patch.txt ]; then
-          echo "[+] 신규 서브도메인 발견! 루트 도메인별로 분류 작업을 시작합니다."
+          echo "[+] 신규 서브도메인 발견! 루트 도메인별 분류 및 httpx 응답 코드 수집을 시작합니다."
           
           REPORT_FILE="New_Subdomains_Report.txt"
           
@@ -61,20 +63,26 @@ jobs:
           while IFS= read -r root_domain || [ -n "$root_domain" ]; do
             [ -z "$root_domain" ] && continue
             
+            # 해당 루트 도메인에 속하는 신규 서브도메인만 필터링
             grep -E "\.${root_domain}$|^${root_domain}$" raw_patch.txt | sort > temp_group.txt
             
             if [ -s temp_group.txt ]; then
               echo "📌 [Root: $root_domain]" >> $REPORT_FILE
-              cat temp_group.txt >> $REPORT_FILE
+              
+              # [핵심 수정 부] httpx를 사용해 응답 코드를 확인합니다.
+              # -sc: Status Code 표시 / -silent: 불필요한 로그 제거 / -t 50: 동시 스캔 속도
+              # 결과 예시: http://admin.target.com [200]
+              cat temp_group.txt | httpx -sc -silent -t 50 >> $REPORT_FILE
+              
               echo "" >> $REPORT_FILE
             fi
           done < targets.txt
           
           rm -f temp_group.txt
           
-          # 3. 디스코드 API로 텍스트 메시지와 가공된 리포트 파일을 직접 첨부하여 완벽하게 전송합니다.
+          # 3. 디스코드 API로 텍스트 메시지와 응답 코드가 포함된 리포트 파일을 직접 첨부하여 전송합니다.
           curl -H "Content-Type: multipart/form-data" \
-               -F "content=🔥 **[Subdomain Monitor]** 신규 서브도메인이 발견되었습니다! 루트 도메인별로 정리된 아래 첨부파일을 확인하세요." \
+               -F "content=🔥 **[Subdomain Monitor]** 신규 서브도메인 및 응답 코드가 수집되었습니다! 아래 첨부파일을 확인하세요." \
                -F "file=@./$REPORT_FILE" \
                "$DISCORD_URL"
                
