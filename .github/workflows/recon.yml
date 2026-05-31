@@ -43,34 +43,44 @@ jobs:
         echo "$NOTIFY_CONFIG" > ~/.config/notify/provider-config.yaml
         [ ! -s "targets.txt" ] && echo "naver.com" > targets.txt
 
+        # 임시 파일 기본 생성으로 파일 누락 에러 원천 차단
+        touch raw_patch.txt all_passive_urls.txt filtered_urls.txt total_scan_list.txt live_results.txt
+
         # 1. [PASSIVE] 모든 소스에서 서브도메인 및 URL 일괄 수집
         echo "[+] 서브도메인 및 패시브 URL 수집 중..."
         subfinder -dL targets.txt -silent | anew domains_old.txt > raw_patch.txt
         
         if [ -s raw_patch.txt ]; then
-          touch all_passive_urls.txt
           while read -r root; do
             root=$(echo "$root" | xargs)
             [ -z "$root" ] && continue
             
-            # [최적화 패치 A] Katana에 -automatic-scoping 옵션을 주어 엉뚱한 외부 사이트로 빠지는 걸 막고, 
-            # 리눅스 timeout 45 명령어를 결합하여 아무리 길어도 45초 뒤엔 강제 종료시킵니다.
-            timeout 45s katana -u "$root" -passive -automatic-scoping -silent -field url >> all_passive_urls.txt &
-            
-            # [최적화 패치 B] Waybackurls 역시 특정 도메인에 데이터가 너무 많으면 45초만 긁고 끊어버립니다.
-            timeout 45s sh -c "echo '$root' | waybackurls" >> all_passive_urls.txt &
+            timeout 45s katana -u "$root" -passive -automatic-scoping -silent -field url >> all_passive_urls.txt 2>/dev/null &
+            timeout 45s sh -c "echo '$root' | waybackurls" >> all_passive_urls.txt 2>/dev/null &
           done < targets.txt
-          wait # 최대 45초 대기 후 무조건 다음 단계 진입
+          wait 
 
-          # 민감 확장자 필터링 및 노이즈 제거 (일괄 처리)
-          grep -Ei "\.(env|log|bak|sql|ini|git|conf|zip|tar|gz|yaml|yml|old|bkp|pwd)$|dashboard|admin|login|portal|config|swagger|api-docs|index-of" all_passive_urls.txt \
-            | grep -Eiv "\.(png|jpg|jpeg|gif|css|js|woff|woff2|svg|ico|font)$" \
-            | sort -u > filtered_urls.txt || true
+          # 수집된 패시브 URL이 존재할 때만 필터링 진행
+          if [ -s all_passive_urls.txt ]; then
+            grep -Ei "\.(env|log|bak|sql|ini|git|conf|zip|tar|gz|yaml|yml|old|bkp|pwd)$|dashboard|admin|login|portal|config|swagger|api-docs|index-of" all_passive_urls.txt \
+              | grep -Eiv "\.(png|jpg|jpeg|gif|css|js|woff|woff2|svg|ico|font)$" \
+              | sort -u > filtered_urls.txt || true
+          fi
 
-          # 2. [BATCH CHECK] httpx 단 한 번만 실행
+          # 2. [BATCH CHECK] httpx 검증 대상 리스트 조립 및 예외 처리
           echo "[+] 수집된 모든 자산 실시간 응답 코드 확인 중 (Batch)..."
-          cat raw_patch.txt filtered_urls.txt | sort -u > total_scan_list.txt
-          cat total_scan_list.txt | httpx -sc -silent -t 200 -timeout 2 -retries 0 -no-color > live_results.txt || true
+          
+          # 파일들이 비어있지 않은지 체크하면서 안전하게 병합
+          cat raw_patch.txt > total_scan_list.txt
+          if [ -s filtered_urls.txt ]; then
+            cat filtered_urls.txt >> total_scan_list.txt
+          fi
+          sort -u total_scan_list.txt -o total_scan_list.txt
+
+          # 최종 스캔 대상 리스트가 비어있지 않을 때만 httpx 작동 (핵심 에러 방지 패치)
+          if [ -s total_scan_list.txt ]; then
+            cat total_scan_list.txt | httpx -sc -silent -t 200 -timeout 2 -retries 0 -no-color > live_results.txt || true
+          fi
 
           # 3. [REPORTING] 결과 조립 (매칭)
           REPORT_FILE="New_Subdomains_Report.txt"
@@ -82,6 +92,7 @@ jobs:
             root=$(echo "$root" | xargs)
             [ -z "$root" ] && continue
             
+            touch temp_subs.txt
             grep -E "\.${root}$|^${root}$" raw_patch.txt | sort > temp_subs.txt || true
             
             if [ -s temp_subs.txt ]; then
@@ -90,19 +101,32 @@ jobs:
               echo "--------------------------------------------" >> $REPORT_FILE
               
               while read -r sub; do
-                RES=$(grep -i "^http.*$sub" live_results.txt | head -n 1)
+                sub=$(echo "$sub" | xargs)
+                [ -z "$sub" ] && continue
+
+                RES=""
+                if [ -s live_results.txt ]; then
+                  RES=$(grep -i "^http.*$sub" live_results.txt | head -n 1 || true)
+                fi
+
                 if [ -z "$RES" ]; then
                   echo "🌐 $sub [No Response]" >> $REPORT_FILE
                 else
                   echo "🌐 $RES" >> $REPORT_FILE
                 fi
                 
-                grep -i "$sub" filtered_urls.txt | sort -u | while read -r d_url; do
-                  D_RES=$(grep -iF "$d_url" live_results.txt | head -n 1)
-                  [ -n "$D_RES" ] && echo "   ↳ 🔍 Found: $D_RES" >> $REPORT_FILE
-                done
+                if [ -s filtered_urls.txt ]; then
+                  grep -i "$sub" filtered_urls.txt | sort -u | while read -r d_url; do
+                    D_RES=""
+                    if [ -s live_results.txt ]; then
+                      D_RES=$(grep -iF "$d_url" live_results.txt | head -n 1 || true)
+                    fi
+                    [ -n "$D_RES" ] && echo "   ↳ 🔍 Found: $D_RES" >> $REPORT_FILE
+                  done
+                fi
               done < temp_subs.txt
             fi
+            rm -f temp_subs.txt
           done < targets.txt
 
           # 4. 전송
