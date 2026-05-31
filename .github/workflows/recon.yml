@@ -17,16 +17,13 @@ jobs:
       with:
         go-version: 'stable'
 
-    # ---------------- [여기서부터 캐싱 로직 추가] ----------------
     - name: Cache Go Binaries
       id: cache-go
       uses: actions/cache@v4
       with:
         path: ~/go/bin
         key: ${{ runner.os }}-go-bin-${{ hashFiles('.github/workflows/recon.yml') }}
-    # ------------------------------------------------------------
 
-    # 캐시가 있으면(이전에 설치한 적이 있다면) 이 단계는 건너뜁니다!
     - name: Install Tools
       if: steps.cache-go.outputs.cache-hit != 'true'
       run: |
@@ -46,21 +43,22 @@ jobs:
           echo "target.com" > targets.txt
         fi
         
-        # 1. 신규 도메인을 patch.txt에 모읍니다.
-        subfinder -dL targets.txt -t 100 -timeout 5 -max-time 10 -silent | anew domains_old.txt > patch.txt
+        # [핵심 수정 부] 
+        # 1. 속도 옵션을 추가하고(-t 100 -timeout 5), 결과를 알림으로 바로 쏘지 않고 'patch.txt' 파일에 임시 저장합니다.
+        subfinder -dL targets.txt -t 100 -timeout 5 -silent | anew domains_old.txt > patch.txt
         
-        # 2. 신규 도메인이 존재할 때 (patch.txt 파일 크기가 0보다 크면)
+        # 2. 만약 patch.txt 파일 크기가 0보다 크다면 (신규 자산이 있다면)
         if [ -s patch.txt ]; then
-          echo "[+] 신규 서브도메인 발견! 알림을 전송합니다."
+          echo "[+] 신규 서브도메인 발견! 하나의 메시지로 묶어서 전송합니다."
+          
+          # 파일 내용을 통째로 읽어 notify에 던짐으로써 디스코드가 글자 수 한도 내에서 한 번에 벌크로 보여줍니다.
           cat patch.txt | notify -silent
         else
-          # 3. [수정된 부분] 신규 도메인이 없을 때 디스코드에 안내 메시지를 보냅니다.
           echo "[-] 새로 발견된 서브도메인이 없습니다."
-          
-          # 간단한 텍스트 문구를 생성하여 notify로 전달합니다.
           echo "🔍 **[Subdomain Monitor]** 새로운 서브도메인이 발견되지 않았습니다. (정상 작동 중)" | notify -silent
         fi
         
+        # 사용 완료한 임시 파일 삭제
         rm -f patch.txt
         
     - name: Commit & Push changes
