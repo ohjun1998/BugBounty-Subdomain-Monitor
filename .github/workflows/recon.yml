@@ -80,8 +80,11 @@ jobs:
           fi
           sort -u total_scan_list.txt -o total_scan_list.txt
 
+          # [가장 핵심적인 수정] 
+          # httpx 실행 라인을 전체 서브쉘 ( )로 감싸고 뒤에 || true를 명시하여, 
+          # 응답이 오는 도메인이 0개여서 httpx가 내부 에러 코드 1을 반환해도 파이프라인이 멈추지 않게 방어합니다.
           if [ -s total_scan_list.txt ]; then
-            cat total_scan_list.txt | httpx -sc -silent -t 200 -timeout 2 -retries 0 -no-color > live_results.txt || true
+            (cat total_scan_list.txt | httpx -sc -silent -t 200 -timeout 2 -retries 0 -no-color > live_results.txt) || true
           fi
 
           # 4. 리포트 조립
@@ -131,7 +134,6 @@ jobs:
             rm -f temp_subs.txt
           done < targets.txt
 
-          # [에러 방지 패치] 디스코드 주소가 잘못되었거나 통신장애가 나도 무조건 정상 패스 처리 (|| true)
           curl -H "Content-Type: multipart/form-data" \
                -F "content=🔥 **[Subdomain Monitor]** 초고속 최적화 스캔 완료! 새로운 취약성 자산이 발견되었습니다." \
                -F "file=@./$REPORT_FILE" \
@@ -143,7 +145,6 @@ jobs:
 
         rm -f raw_patch.txt all_passive_urls.txt filtered_urls.txt total_scan_list.txt live_results.txt temp_subs.txt New_Subdomains_Report.txt || true
 
-    # [에러 방지 패치] Git 커밋 과정에서 "No changes" 등으로 에러가 나더라도 Actions 단계 자체는 성공으로 끝마침
     - name: Commit & Push
       run: |
         git config --local user.email "actions@github.com"
