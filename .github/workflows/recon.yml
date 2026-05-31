@@ -41,15 +41,24 @@ jobs:
       run: |
         mkdir -p ~/.config/notify
         echo "$NOTIFY_CONFIG" > ~/.config/notify/provider-config.yaml
-        [ ! -s "targets.txt" ] && echo "naver.com" > targets.txt
+        
+        # 파일이 없거나 비어있으면 초기화
+        if [ ! -f "targets.txt" ] || [ ! -s "targets.txt" ]; then
+          echo "target.com" > targets.txt
+        fi
+        if [ ! -f "domains_old.txt" ]; then
+          touch domains_old.txt
+        fi
 
-        # 임시 파일 기본 생성으로 파일 누락 에러 원천 차단
+        # 임시 파일 미리 생성 (에러 방지)
         touch raw_patch.txt all_passive_urls.txt filtered_urls.txt total_scan_list.txt live_results.txt
 
         # 1. [PASSIVE] 모든 소스에서 서브도메인 및 URL 일괄 수집
         echo "[+] 서브도메인 및 패시브 URL 수집 중..."
-        subfinder -dL targets.txt -silent | anew domains_old.txt > raw_patch.txt
+        # [핵심 수정] 새 도메인이 없어서 anew가 exit 1을 뱉어도 파이프라인이 멈추지 않도록 || true 추가
+        (subfinder -dL targets.txt -silent || true) | (anew domains_old.txt > raw_patch.txt || true)
         
+        # 2. 분석 진입 조건 확인
         if [ -s raw_patch.txt ]; then
           while read -r root; do
             root=$(echo "$root" | xargs)
@@ -67,22 +76,21 @@ jobs:
               | sort -u > filtered_urls.txt || true
           fi
 
-          # 2. [BATCH CHECK] httpx 검증 대상 리스트 조립 및 예외 처리
+          # 3. [BATCH CHECK] httpx 검증 대상 리스트 조립
           echo "[+] 수집된 모든 자산 실시간 응답 코드 확인 중 (Batch)..."
           
-          # 파일들이 비어있지 않은지 체크하면서 안전하게 병합
           cat raw_patch.txt > total_scan_list.txt
           if [ -s filtered_urls.txt ]; then
             cat filtered_urls.txt >> total_scan_list.txt
           fi
           sort -u total_scan_list.txt -o total_scan_list.txt
 
-          # 최종 스캔 대상 리스트가 비어있지 않을 때만 httpx 작동 (핵심 에러 방지 패치)
+          # 최종 리스트가 비어있지 않을 때만 httpx 작동
           if [ -s total_scan_list.txt ]; then
             cat total_scan_list.txt | httpx -sc -silent -t 200 -timeout 2 -retries 0 -no-color > live_results.txt || true
           fi
 
-          # 3. [REPORTING] 결과 조립 (매칭)
+          # 4. [REPORTING] 결과 조립 (매칭)
           REPORT_FILE="New_Subdomains_Report.txt"
           echo "========= 🚀 종합 자산 식별 리포트 =========" > $REPORT_FILE
           echo "스캔 일시: $(date)" >> $REPORT_FILE
@@ -129,13 +137,15 @@ jobs:
             rm -f temp_subs.txt
           done < targets.txt
 
-          # 4. 전송
+          # 디스코드 전송
           curl -H "Content-Type: multipart/form-data" \
-               -F "content=🔥 **[Subdomain Monitor]** 초고속 최적화 스캔 완료!" \
+               -F "content=🔥 **[Subdomain Monitor]** 초고속 최적화 스캔 완료! 새로운 취약성 자산이 발견되었습니다." \
                -F "file=@./$REPORT_FILE" \
                "$DISCORD_URL"
         else
-          echo "🔍 새로운 서브도메인이 없습니다." | notify -silent
+          # [안정화 패치] 새로 발견된 자산이 0개일 때도 완벽히 정상 종료 처리
+          echo "[-] 새로 발견된 서브도메인이 없습니다."
+          echo "🔍 **[Subdomain Monitor]** 새로운 서브도메인이 발견되지 않았습니다. (정상 작동 중)" | notify -silent || true
         fi
 
         # 청소
