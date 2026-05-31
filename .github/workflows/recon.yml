@@ -2,7 +2,7 @@ name: BugBounty Subdomain Monitor
 
 on:
   schedule:
-    - cron: '0 9 * * *' # 매일 오후 18시(한국 시간)에 자동으로 실행
+    - cron: '0 3,9 * * *' # 매일 오후 18시(한국 시간)에 자동으로 실행
   workflow_dispatch: # 수동 실행 버튼
 
 jobs:
@@ -32,6 +32,7 @@ jobs:
         go install -v github.com/tomnomnom/anew@latest
         go install -v github.com/projectdiscovery/notify/cmd/notify@latest
         go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
+        go install -v github.com/projectdiscovery/katana/cmd/katana@latest
 
     - name: Run Recon Pipeline
       env:
@@ -41,17 +42,16 @@ jobs:
         mkdir -p ~/.config/notify
         echo "$NOTIFY_CONFIG" > ~/.config/notify/provider-config.yaml
         
-        # 만약 targets.txt 파일이 비어있거나 없다면 에러 방지용 기본값 생성
         if [ ! -f "targets.txt" ] || [ ! -s "targets.txt" ]; then
           echo "target.com" > targets.txt
         fi
         
-        # 1. 신규 도메인을 수집합니다.
+        # 1. 신규 서브도메인 수집
         subfinder -dL targets.txt -t 100 -timeout 5 -silent | anew domains_old.txt > raw_patch.txt
         
-        # 2. 신규 도메인이 존재할 때만 작업을 시작합니다.
+        # 2. 신규 자산 분석 진입
         if [ -s raw_patch.txt ]; then
-          echo "[+] 신규 서브도메인 발견! 자산 분석을 시작합니다."
+          echo "[+] 신규 자산 식별 및 효율화된 구글 도킹 정찰을 시작합니다."
           
           REPORT_FILE="New_Subdomains_Report.txt"
           
@@ -61,7 +61,6 @@ jobs:
           echo "" >> $REPORT_FILE
           
           while IFS= read -r root_domain || [ -n "$root_domain" ]; do
-            # 공백 문자 및 빈 줄 완벽 제거
             root_domain=$(echo "$root_domain" | tr -d '\r' | xargs)
             [ -z "$root_domain" ] && continue
             
@@ -69,21 +68,46 @@ jobs:
             
             if [ -s temp_group.txt ]; then
               echo "📌 [Root: $root_domain]" >> $REPORT_FILE
+              echo "--------------------------------------------" >> $REPORT_FILE
               
-              # [에러 방지 핵심 수정]
-              # httpx 자체의 -no-color 옵션 에러 가능성을 배제하기 위해 해당 옵션을 빼고 실행하되,
-              # 리눅스 정규식(sed)을 파이프라인 뒤에 붙여서 깨지는 색상 코드(\x1b[...)를 완벽하게 지워버립니다.
-              cat temp_group.txt | httpx -sc -silent -t 100 -timeout 3 -retries 0 | sed 's/\x1b\[[0-9;]*m//g' >> $REPORT_FILE
+              # [효율화 패치] 대소문자 무시(-i), 노이즈 유발 정적 파일 확장자 역필터링(-v) 적용
+              katana -u "$root_domain" -passive -silent -field url \
+                | grep -Ei "\.(env|log|bak|sql|ini|git|conf|zip|tar|gz|yaml|yml|old|bkp|pwd)$|dashboard|admin|login|portal|config|swagger|api-docs|index-of" \
+                | grep -Eiv "\.(png|jpg|jpeg|gif|css|js|woff|woff2|svg|ico|font)$" \
+                | sort -u > temp_all_dorks.txt
               
+              while IFS= read -r sub_domain || [ -n "$sub_domain" ]; do
+                [ -z "$sub_domain" ] && continue
+                
+                # A. 서브도메인 메인 주소 응답코드 확인
+                echo "🌐 $(echo "$sub_domain" | httpx -sc -silent -t 10 -timeout 3 -retries 0 | sed 's/\x1b\[[0-9;]*m//g')" >> $REPORT_FILE
+                
+                # B. [효율화 패치] 솎아낸 도킹 URL들을 그냥 열거하지 않고, 
+                # httpx를 한 번 더 태워서 현재 진짜 살아있는 주소인지 검증하여 응답코드와 함께 표기합니다.
+                grep -i "$sub_domain" temp_all_dorks.txt > temp_sub_dorks.txt
+                if [ -s temp_sub_dorks.txt ]; then
+                  cat temp_sub_dorks.txt \
+                    | httpx -sc -silent -t 10 -timeout 3 -retries 0 \
+                    | sed 's/\x1b\[[0-9;]*m//g' \
+                    | while read -r validated_dork; do
+                      echo "   ↳ 🔍 Dork: $validated_dork" >> $REPORT_FILE
+                    done
+                fi
+                rm -f temp_sub_dorks.txt
+                
+                echo "" >> $REPORT_FILE
+              done < temp_group.txt
+              
+              echo "============================================" >> $REPORT_FILE
               echo "" >> $REPORT_FILE
+              rm -f temp_all_dorks.txt
             fi
           done < targets.txt
           
           rm -f temp_group.txt
           
-          # 3. 디스코드 API로 파일 전송
           curl -H "Content-Type: multipart/form-data" \
-               -F "content=🔥 **[Subdomain Monitor]** 신규 서브도메인 및 응답 코드가 수집되었습니다! 아래 첨부파일을 확인하세요." \
+               -F "content=🔥 **[Subdomain Monitor]** 스캔 완료! 노이즈가 제거되고 유효성이 검증된 실시간 도킹 리포트를 확인하세요." \
                -F "file=@./$REPORT_FILE" \
                "$DISCORD_URL"
                
