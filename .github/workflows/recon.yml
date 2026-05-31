@@ -30,13 +30,26 @@ jobs:
         mkdir -p ~/.config/notify
         echo "$NOTIFY_CONFIG" > ~/.config/notify/provider-config.yaml
         
-        # 만약 targets.txt 파일이 아직 없다면 빈 파일이라도 생성해서 에러 방지
         if [ ! -f "targets.txt" ]; then
           echo "target.com" > targets.txt
         fi
         
-        # 스캔 진행 및 알림
-        subfinder -dL targets.txt -silent | anew domains_old.txt | notify -silent
+        # 1. 수집된 신규 도메인들을 알림으로 바로 쏘지 않고, 'patch.txt'라는 임시 파일에 먼저 모읍니다.
+        subfinder -dL targets.txt -silent | anew domains_old.txt > patch.txt
+        
+        # 2. 만약 신규 도메인이 존재한다면 (patch.txt 파일 크기가 0보다 크다면)
+        if [ -s patch.txt ]; then
+          echo "[+] 신규 서브도메인 발견! 알림을 전송합니다."
+          
+          # 임시 파일 내용을 통째로 읽어서 notify에 던집니다. 
+          # 이렇게 하면 notify가 하나의 메시지(벌크)로 묶어서 디스코드로 전송합니다.
+          cat patch.txt | notify -silent
+        else
+          echo "[-] 새로 발견된 서브도메인이 없습니다."
+        fi
+        
+        # 3. 사용한 임시 파일 삭제
+        rm -f patch.txt
         
     - name: Commit & Push changes
       run: |
