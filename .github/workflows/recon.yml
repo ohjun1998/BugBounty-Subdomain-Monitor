@@ -2,8 +2,8 @@ name: BugBounty Subdomain Monitor
 
 on:
   schedule:
-    - cron: '0 3,9 * * *' # 매일 12시, 18시(한국 시간)에 자동으로 실행
-  workflow_dispatch: # 수동 실행 버튼
+    - cron: '0 3,9 * * *'
+  workflow_dispatch:
 
 jobs:
   recon:
@@ -27,7 +27,6 @@ jobs:
     - name: Install Tools
       if: steps.cache-go.outputs.cache-hit != 'true'
       run: |
-        echo "[+] 캐시를 찾지 못해 툴을 새로 설치합니다."
         go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
         go install -v github.com/tomnomnom/anew@latest
         go install -v github.com/projectdiscovery/notify/cmd/notify@latest
@@ -42,117 +41,88 @@ jobs:
       run: |
         mkdir -p ~/.config/notify
         echo "$NOTIFY_CONFIG" > ~/.config/notify/provider-config.yaml
+        [ ! -s "targets.txt" ] && echo "naver.com" > targets.txt
+
+        # 1. [PASSIVE] 모든 소스에서 서브도메인 및 URL 일괄 수집 (초고속)
+        echo "[+] 서브도메인 및 패시브 URL 수집 중..."
+        subfinder -dL targets.txt -silent | anew domains_old.txt > raw_patch.txt
         
-        if [ ! -f "targets.txt" ] || [ ! -s "targets.txt" ]; then
-          echo "target.com" > targets.txt
-        fi
-        
-        # 임시 파일 초기화 생성 (에러 방지용)
-        touch raw_patch.txt temp_group.txt temp_all_dorks.txt temp_all_wayback.txt
-        
-        # 1. 신규 서브도메인 수집
-        subfinder -dL targets.txt -t 100 -timeout 5 -silent | anew domains_old.txt > raw_patch.txt
-        
-        # 2. 신규 자산 정밀 분석 진입
         if [ -s raw_patch.txt ]; then
-          echo "[+] 신규 자산 식별 및 구글 도킹 + Wayback 정찰을 시작합니다."
-          
+          # 모든 루트 도메인에 대해 Katana/Wayback 결과 미리 모으기
+          touch all_passive_urls.txt
+          while read -r root; do
+            root=$(echo "$root" | xargs)
+            [ -z "$root" ] && continue
+            
+            # Katana & Wayback 병렬 수집 및 필터링
+            katana -u "$root" -passive -silent -field url >> all_passive_urls.txt &
+            echo "$root" | waybackurls >> all_passive_urls.txt &
+          done < targets.txt
+          wait # 모든 패시브 수집 완료 대기
+
+          # 민감 확장자 필터링 및 노이즈 제거 (일괄 처리)
+          grep -Ei "\.(env|log|bak|sql|ini|git|conf|zip|tar|gz|yaml|yml|old|bkp|pwd)$|dashboard|admin|login|portal|config|swagger|api-docs|index-of" all_passive_urls.txt \
+            | grep -Eiv "\.(png|jpg|jpeg|gif|css|js|woff|woff2|svg|ico|font)$" \
+            | sort -u > filtered_urls.txt || true
+
+          # 2. [BATCH CHECK] httpx 단 한 번만 실행 (속도의 핵심)
+          echo "[+] 수집된 모든 자산 실시간 응답 코드 확인 중 (Batch)..."
+          cat raw_patch.txt filtered_urls.txt | sort -u > total_scan_list.txt
+          # 스레드 200개, 타임아웃 2초로 극강의 속도 발휘
+          cat total_scan_list.txt | httpx -sc -silent -t 200 -timeout 2 -retries 0 -no-color > live_results.txt || true
+
+          # 3. [REPORTING] 결과 조립 (매칭)
           REPORT_FILE="New_Subdomains_Report.txt"
-          
           echo "========= 🚀 종합 자산 식별 리포트 =========" > $REPORT_FILE
           echo "스캔 일시: $(date)" >> $REPORT_FILE
           echo "============================================" >> $REPORT_FILE
-          echo "" >> $REPORT_FILE
-          
-          while IFS= read -r root_domain || [ -n "$root_domain" ]; do
-            root_domain=$(echo "$root_domain" | tr -d '\r' | xargs)
-            [ -z "$root_domain" ] && continue
+
+          while read -r root; do
+            root=$(echo "$root" | xargs)
+            [ -z "$root" ] && continue
             
-            grep -E "\.${root_domain}$|^${root_domain}$" raw_patch.txt | sort > temp_group.txt || true
+            # 현재 루트 도메인에 속하는 서브도메인만 추출
+            grep -E "\.${root}$|^${root}$" raw_patch.txt | sort > temp_subs.txt || true
             
-            if [ -s temp_group.txt ]; then
-              echo "📌 [Root: $root_domain]" >> $REPORT_FILE
+            if [ -s temp_subs.txt ]; then
+              echo "" >> $REPORT_FILE
+              echo "📌 [Root: $root]" >> $REPORT_FILE
               echo "--------------------------------------------" >> $REPORT_FILE
               
-              # A. 구글 도킹 수집 및 에러 방지 처리 (|| true)
-              katana -u "$root_domain" -passive -silent -field url \
-                | grep -Ei "\.(env|log|bak|sql|ini|git|conf|zip|tar|gz|yaml|yml|old|bkp|pwd)$|dashboard|admin|login|portal|config|swagger|api-docs|index-of" \
-                | grep -Eiv "\.(png|jpg|jpeg|gif|css|js|woff|woff2|svg|ico|font)$" \
-                | sort -u > temp_all_dorks.txt || true
-              
-              # B. Waybackurls 수집 및 에러 방지 처리 (|| true)
-              echo "$root_domain" | waybackurls \
-                | grep -Ei "\.(env|log|bak|sql|ini|git|conf|zip|tar|gz|yaml|yml|old|bkp|pwd)$|dashboard|admin|login|portal|config|swagger|api-docs|index-of" \
-                | grep -Eiv "\.(png|jpg|jpeg|gif|css|js|woff|woff2|svg|ico|font)$" \
-                | sort -u > temp_all_wayback.txt || true
-              
-              # 서브도메인별 매칭 루프
-              while IFS= read -r sub_domain || [ -n "$sub_domain" ]; do
-                sub_domain=$(echo "$sub_domain" | xargs)
-                [ -z "$sub_domain" ] && continue
-                
-                # 메인 주소 응답코드 확인
-                echo "🌐 $(echo "$sub_domain" | httpx -sc -silent -t 10 -timeout 3 -retries 0 | sed 's/\x1b\[[0-9;]*m//g')" >> $REPORT_FILE
-                
-                # ① 구글 도킹 결과 매칭 검증
-                if [ -s temp_all_dorks.txt ]; then
-                  grep -i "$sub_domain" temp_all_dorks.txt > temp_sub_dorks.txt || true
-                  if [ -s temp_sub_dorks.txt ]; then
-                    cat temp_sub_dorks.txt \
-                      | httpx -sc -silent -t 10 -timeout 3 -retries 0 \
-                      | sed 's/\x1b\[[0-9;]*m//g' \
-                      | while read -r validated_dork; do
-                        echo "   ↳ 🔍 Dork: $validated_dork" >> $REPORT_FILE
-                      done || true
-                  fi
-                  rm -f temp_sub_dorks.txt
+              while read -r sub; do
+                # 미리 만들어둔 live_results.txt에서 결과값만 쏙 뽑아옴 (네트워크 요청 없음)
+                RES=$(grep -i "^http.*$sub" live_results.txt | head -n 1)
+                if [ -z "$RES" ]; then
+                  echo "🌐 $sub [No Response]" >> $REPORT_FILE
+                else
+                  echo "🌐 $RES" >> $REPORT_FILE
                 fi
                 
-                # ② Waybackurls 결과 매칭 검증
-                if [ -s temp_all_wayback.txt ]; then
-                  grep -i "$sub_domain" temp_all_wayback.txt > temp_sub_wayback.txt || true
-                  if [ -s temp_sub_wayback.txt ]; then
-                    cat temp_sub_wayback.txt \
-                      | httpx -sc -silent -t 10 -timeout 3 -retries 0 \
-                      | sed 's/\x1b\[[0-9;]*m//g' \
-                      | while read -r validated_wayback; do
-                        echo "   ↳ ⏳ Wayback: $validated_wayback" >> $REPORT_FILE
-                      done || true
-                  fi
-                  rm -f temp_sub_wayback.txt
-                fi
-                
-                echo "" >> $REPORT_FILE
-              done < temp_group.txt
-              
-              echo "============================================" >> $REPORT_FILE
-              echo "" >> $REPORT_FILE
+                # 해당 서브도메인의 Dork/Wayback 결과 매칭
+                grep -i "$sub" filtered_urls.txt | sort -u | while read -r d_url; do
+                  D_RES=$(grep -iF "$d_url" live_results.txt | head -n 1)
+                  [ -n "$D_RES" ] && echo "   ↳ 🔍 Found: $D_RES" >> $REPORT_FILE
+                done
+              done < temp_subs.txt
             fi
-            
-            # 루프가 끝날 때마다 안전하게 초기화
-            echo "" > temp_all_dorks.txt
-            echo "" > temp_all_wayback.txt
           done < targets.txt
-          
-          # 3. 디스코드 API로 완벽하게 전송
+
+          # 4. 전송
           curl -H "Content-Type: multipart/form-data" \
-               -F "content=🔥 **[Subdomain Monitor]** 정기 스캔 완료! 구글 도킹과 Wayback 아카이브 교차 검증 리포트가 배달되었습니다." \
+               -F "content=🔥 **[Subdomain Monitor]** 초고속 최적화 스캔 완료!" \
                -F "file=@./$REPORT_FILE" \
                "$DISCORD_URL"
-               
-          rm -f $REPORT_FILE
         else
-          echo "[-] 새로 발견된 서브도메인이 없습니다."
-          echo "🔍 **[Subdomain Monitor]** 새로운 서브도메인이 발견되지 않았습니다. (정상 작동 중)" | notify -silent
+          echo "🔍 새로운 서브도메인이 없습니다." | notify -silent
         fi
-        
-        # 최종 파일 청소
-        rm -f raw_patch.txt temp_group.txt temp_all_dorks.txt temp_all_wayback.txt
-        
-    - name: Commit & Push changes
+
+        # 청소
+        rm -f raw_patch.txt all_passive_urls.txt filtered_urls.txt total_scan_list.txt live_results.txt temp_subs.txt $REPORT_FILE || true
+
+    - name: Commit & Push
       run: |
         git config --local user.email "actions@github.com"
         git config --local user.name "GitHub Actions"
         git add domains_old.txt
-        git commit -m "Update domains_old.txt [skip ci]" || echo "No changes to commit"
+        git commit -m "Update domains [skip ci]" || echo "No changes"
         git push
