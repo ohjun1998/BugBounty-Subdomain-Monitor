@@ -47,7 +47,7 @@ jobs:
         fi
         
         # 1. 신규 도메인을 patch.txt에 모읍니다.
-        subfinder -dL targets.txt -silent | anew domains_old.txt > patch.txt
+        subfinder -dL targets.txt -t 100 -timeout 5 -max-time 10 -silent | anew domains_old.txt > patch.txt
         
         # 2. 신규 도메인이 존재할 때 (patch.txt 파일 크기가 0보다 크면)
         if [ -s patch.txt ]; then
