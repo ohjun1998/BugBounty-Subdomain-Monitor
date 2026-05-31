@@ -42,7 +42,6 @@ jobs:
         mkdir -p ~/.config/notify
         echo "$NOTIFY_CONFIG" > ~/.config/notify/provider-config.yaml
         
-        # 파일이 없거나 비어있으면 초기화
         if [ ! -f "targets.txt" ] || [ ! -s "targets.txt" ]; then
           echo "target.com" > targets.txt
         fi
@@ -50,15 +49,13 @@ jobs:
           touch domains_old.txt
         fi
 
-        # 임시 파일 미리 생성 (에러 방지)
         touch raw_patch.txt all_passive_urls.txt filtered_urls.txt total_scan_list.txt live_results.txt
 
-        # 1. [PASSIVE] 모든 소스에서 서브도메인 및 URL 일괄 수집
+        # 1. 서브도메인 수집
         echo "[+] 서브도메인 및 패시브 URL 수집 중..."
-        # [핵심 수정] 새 도메인이 없어서 anew가 exit 1을 뱉어도 파이프라인이 멈추지 않도록 || true 추가
         (subfinder -dL targets.txt -silent || true) | (anew domains_old.txt > raw_patch.txt || true)
         
-        # 2. 분석 진입 조건 확인
+        # 2. 분석 진입
         if [ -s raw_patch.txt ]; then
           while read -r root; do
             root=$(echo "$root" | xargs)
@@ -69,28 +66,25 @@ jobs:
           done < targets.txt
           wait 
 
-          # 수집된 패시브 URL이 존재할 때만 필터링 진행
           if [ -s all_passive_urls.txt ]; then
             grep -Ei "\.(env|log|bak|sql|ini|git|conf|zip|tar|gz|yaml|yml|old|bkp|pwd)$|dashboard|admin|login|portal|config|swagger|api-docs|index-of" all_passive_urls.txt \
               | grep -Eiv "\.(png|jpg|jpeg|gif|css|js|woff|woff2|svg|ico|font)$" \
               | sort -u > filtered_urls.txt || true
           fi
 
-          # 3. [BATCH CHECK] httpx 검증 대상 리스트 조립
+          # 3. httpx 검증
           echo "[+] 수집된 모든 자산 실시간 응답 코드 확인 중 (Batch)..."
-          
           cat raw_patch.txt > total_scan_list.txt
           if [ -s filtered_urls.txt ]; then
             cat filtered_urls.txt >> total_scan_list.txt
           fi
           sort -u total_scan_list.txt -o total_scan_list.txt
 
-          # 최종 리스트가 비어있지 않을 때만 httpx 작동
           if [ -s total_scan_list.txt ]; then
             cat total_scan_list.txt | httpx -sc -silent -t 200 -timeout 2 -retries 0 -no-color > live_results.txt || true
           fi
 
-          # 4. [REPORTING] 결과 조립 (매칭)
+          # 4. 리포트 조립
           REPORT_FILE="New_Subdomains_Report.txt"
           echo "========= 🚀 종합 자산 식별 리포트 =========" > $REPORT_FILE
           echo "스캔 일시: $(date)" >> $REPORT_FILE
@@ -137,24 +131,23 @@ jobs:
             rm -f temp_subs.txt
           done < targets.txt
 
-          # 디스코드 전송
+          # [에러 방지 패치] 디스코드 주소가 잘못되었거나 통신장애가 나도 무조건 정상 패스 처리 (|| true)
           curl -H "Content-Type: multipart/form-data" \
                -F "content=🔥 **[Subdomain Monitor]** 초고속 최적화 스캔 완료! 새로운 취약성 자산이 발견되었습니다." \
                -F "file=@./$REPORT_FILE" \
-               "$DISCORD_URL"
+               "$DISCORD_URL" || echo "Discord Send Failed"
         else
-          # [안정화 패치] 새로 발견된 자산이 0개일 때도 완벽히 정상 종료 처리
           echo "[-] 새로 발견된 서브도메인이 없습니다."
           echo "🔍 **[Subdomain Monitor]** 새로운 서브도메인이 발견되지 않았습니다. (정상 작동 중)" | notify -silent || true
         fi
 
-        # 청소
-        rm -f raw_patch.txt all_passive_urls.txt filtered_urls.txt total_scan_list.txt live_results.txt temp_subs.txt $REPORT_FILE || true
+        rm -f raw_patch.txt all_passive_urls.txt filtered_urls.txt total_scan_list.txt live_results.txt temp_subs.txt New_Subdomains_Report.txt || true
 
+    # [에러 방지 패치] Git 커밋 과정에서 "No changes" 등으로 에러가 나더라도 Actions 단계 자체는 성공으로 끝마침
     - name: Commit & Push
       run: |
         git config --local user.email "actions@github.com"
         git config --local user.name "GitHub Actions"
         git add domains_old.txt
-        git commit -m "Update domains [skip ci]" || echo "No changes"
-        git push
+        git commit -m "Update domains [skip ci]" || echo "No changes to commit"
+        git push || echo "Git push failed"
