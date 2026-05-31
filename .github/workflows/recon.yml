@@ -43,23 +43,48 @@ jobs:
           echo "target.com" > targets.txt
         fi
         
-        # [핵심 수정 부] 
-        # 1. 속도 옵션을 추가하고(-t 100 -timeout 5), 결과를 알림으로 바로 쏘지 않고 'patch.txt' 파일에 임시 저장합니다.
-        subfinder -dL targets.txt -t 100 -timeout 5 -silent | anew domains_old.txt > patch.txt
+        # 1. 일단 가공되지 않은 신규 도메인들을 임시로 raw_patch.txt에 담습니다.
+        subfinder -dL targets.txt -t 100 -timeout 5 -silent | anew domains_old.txt > raw_patch.txt
         
-        # 2. 만약 patch.txt 파일 크기가 0보다 크다면 (신규 자산이 있다면)
-        if [ -s patch.txt ]; then
-          echo "[+] 신규 서브도메인 발견! 하나의 메시지로 묶어서 전송합니다."
+        # 2. 신규 도메인이 존재할 때만 그룹화 작업을 시작합니다.
+        if [ -s raw_patch.txt ]; then
+          echo "[+] 신규 서브도메인 발견! 루트 도메인별로 분류 작업을 시작합니다."
           
-          # 파일 내용을 통째로 읽어 notify에 던짐으로써 디스코드가 글자 수 한도 내에서 한 번에 벌크로 보여줍니다.
-          cat patch.txt | notify -silent
+          # 최종 디스코드에 보낼 patch.txt 파일 초기화
+          echo "========= 🚀 신규 자산 식별 리포트 =========" > patch.txt
+          echo "스캔 일시: $(date)" >> patch.txt
+          echo "============================================" >> patch.txt
+          echo "" >> patch.txt
+          
+          # targets.txt를 읽으면서 각 루트 도메인별로 묶어줍니다.
+          while IFS= read -r root_domain || [ -n "$root_domain" ]; do
+            # 공백이나 빈 줄은 무시
+            [ -z "$root_domain" ] && continue
+            
+            # raw_patch.txt에서 현재 루트 도메인으로 끝나는 서브도메인만 추출 후 알파벳 정렬
+            # 예: tesla.com을 가리키면 끝자리가 tesla.com으로 끝나는 것만 뽑아서 정렬합니다.
+            grep -E "\.${root_domain}$|^${root_domain}$" raw_patch.txt | sort > temp_group.txt
+            
+            # 해당 루트 도메인에서 새로 발견된 게 있다면 타이틀과 함께 patch.txt에 누적
+            if [ -s temp_group.txt ]; then
+              echo "📌 [Root: $root_domain]" >> patch.txt
+              cat temp_group.txt >> patch.txt
+              echo "" >> patch.txt # 가독성을 위한 줄바꿈
+            fi
+          done < targets.txt
+          
+          rm -f temp_group.txt
+          
+          # 3. 디스코드 알림 전송 (메시지와 함께 이쁘게 정렬된 patch.txt 파일 첨부)
+          echo "🔥 **[Subdomain Monitor]** 신규 서브도메인이 발견되었습니다! 루트 도메인별로 정리된 아래 첨부파일을 확인하세요." | notify -silent
+          echo "./patch.txt" | notify -silent
         else
           echo "[-] 새로 발견된 서브도메인이 없습니다."
           echo "🔍 **[Subdomain Monitor]** 새로운 서브도메인이 발견되지 않았습니다. (정상 작동 중)" | notify -silent
         fi
         
-        # 사용 완료한 임시 파일 삭제
-        rm -f patch.txt
+        # 임시 파일들 청소
+        rm -f raw_patch.txt patch.txt
         
     - name: Commit & Push changes
       run: |
