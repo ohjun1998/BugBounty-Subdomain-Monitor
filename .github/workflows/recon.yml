@@ -31,7 +31,6 @@ jobs:
         go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
         go install -v github.com/tomnomnom/anew@latest
         go install -v github.com/projectdiscovery/notify/cmd/notify@latest
-        # [신규 추가] 웹 탐색 및 응답 코드 수집 툴인 httpx를 설치합니다.
         go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
 
     - name: Run Recon Pipeline
@@ -46,12 +45,10 @@ jobs:
           echo "target.com" > targets.txt
         fi
         
-        # 1. 신규 도메인을 raw_patch.txt에 모읍니다.
         subfinder -dL targets.txt -t 100 -timeout 5 -silent | anew domains_old.txt > raw_patch.txt
         
-        # 2. 신규 도메인이 존재할 때만 정렬 및 httpx 조회를 시작합니다.
         if [ -s raw_patch.txt ]; then
-          echo "[+] 신규 서브도메인 발견! 루트 도메인별 분류 및 httpx 응답 코드 수집을 시작합니다."
+          echo "[+] 신규 서브도메인 발견! 초고속 httpx 스캔을 시작합니다."
           
           REPORT_FILE="New_Subdomains_Report.txt"
           
@@ -63,16 +60,13 @@ jobs:
           while IFS= read -r root_domain || [ -n "$root_domain" ]; do
             [ -z "$root_domain" ] && continue
             
-            # 해당 루트 도메인에 속하는 신규 서브도메인만 필터링
             grep -E "\.${root_domain}$|^${root_domain}$" raw_patch.txt | sort > temp_group.txt
             
             if [ -s temp_group.txt ]; then
               echo "📌 [Root: $root_domain]" >> $REPORT_FILE
               
-              # [핵심 수정 부] httpx를 사용해 응답 코드를 확인합니다.
-              # -sc: Status Code 표시 / -silent: 불필요한 로그 제거 / -t 50: 동시 스캔 속도
-              # 결과 예시: http://admin.target.com [200]
-              cat temp_group.txt | httpx -sc -silent -t 50 >> $REPORT_FILE
+              # [수정 완료] -no-color 옵션을 추가하여 특수 기호 발생을 차단합니다.
+              cat temp_group.txt | httpx -sc -no-color -silent -t 150 -timeout 3 -retries 0 -mhe 1 >> $REPORT_FILE
               
               echo "" >> $REPORT_FILE
             fi
@@ -80,7 +74,6 @@ jobs:
           
           rm -f temp_group.txt
           
-          # 3. 디스코드 API로 텍스트 메시지와 응답 코드가 포함된 리포트 파일을 직접 첨부하여 전송합니다.
           curl -H "Content-Type: multipart/form-data" \
                -F "content=🔥 **[Subdomain Monitor]** 신규 서브도메인 및 응답 코드가 수집되었습니다! 아래 첨부파일을 확인하세요." \
                -F "file=@./$REPORT_FILE" \
