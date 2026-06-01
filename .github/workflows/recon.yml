@@ -2,7 +2,10 @@ name: BugBounty Subdomain Monitor
 
 on:
   schedule:
-    - cron: '0 3,9 * * *'
+    # 💡 최적화: 정각을 피해 '17분'에 실행되도록 조절하여 GitHub 서버 대기열을 초고속 패스합니다.
+    # UTC 03:17 -> 한국 시간 12:17
+    # UTC 09:17 -> 한국 시간 18:17
+    - cron: '17 3,9 * * *'
   workflow_dispatch:
 
 jobs:
@@ -29,21 +32,15 @@ jobs:
       run: |
         go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
         go install -v github.com/tomnomnom/anew@latest
-        go install -v github.com/projectdiscovery/notify/cmd/notify@latest
         go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest
         go install -v github.com/projectdiscovery/katana/cmd/katana@latest
         go install -v github.com/tomnomnom/waybackurls@latest
 
     - name: Run Recon Pipeline
       env:
-        NOTIFY_CONFIG: ${{ secrets.NOTIFY_SECRET }}
         DISCORD_URL: ${{ secrets.DISCORD_WEBHOOK }}
       run: |
-        # 엄격한 에러 중단 모드를 해제하여 자잘한 쉘 경고/오류로 빌드가 터지는 것을 방지
         set +e
-        
-        mkdir -p ~/.config/notify
-        echo "$NOTIFY_CONFIG" > ~/.config/notify/provider-config.yaml
         
         if [ ! -f "targets.txt" ] || [ ! -s "targets.txt" ]; then
           echo "target.com" > targets.txt
@@ -127,14 +124,17 @@ jobs:
             rm -f temp_subs.txt
           done < targets.txt
 
-          # 디스코드 전송
+          # 디스코드 파일 전송
           curl -H "Content-Type: multipart/form-data" \
-               -F "content=🔥 **[Subdomain Monitor]** 초고속 최적화 스캔 완료! 새로운 취약성 자산이 발견되었습니다." \
+               -F "content=🔥 **[Subdomain Monitor]** 초고속 스캔 완료! 새로운 서브도메인이 발견되어 파일 리포트를 첨부합니다." \
                -F "file=@./$REPORT_FILE" \
-               "$DISCORD_URL"
+               "$DISCORD_URL" || true
         else
+          # 💡 최적화: 불안정한 notify 툴 대신, 검증된 curl 명령어로 디스코드에 생존 신고를 안전하게 보냅니다.
           echo "[-] 새로 발견된 서브도메인이 없습니다."
-          echo "🔍 **[Subdomain Monitor]** 새로운 서브도메인이 발견되지 않았습니다. (정상 작동 중)" | notify -silent
+          curl -H "Content-Type: application/json" \
+               -d '{"content": "🔍 **[Subdomain Monitor]** 정기 스캔이 정상 작동했습니다. 새로운 서브도메인이 발견되지 않았습니다."}' \
+               "$DISCORD_URL" || true
         fi
 
         rm -f raw_patch.txt all_passive_urls.txt filtered_urls.txt total_scan_list.txt live_results.txt temp_subs.txt New_Subdomains_Report.txt || true
