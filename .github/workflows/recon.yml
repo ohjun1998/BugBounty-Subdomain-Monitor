@@ -2,10 +2,8 @@ name: BugBounty Subdomain Monitor
 
 on:
   schedule:
-    # 💡 최적화: 정각을 피해 '17분'에 실행되도록 조절하여 GitHub 서버 대기열을 초고속 패스합니다.
-    # UTC 03:17 -> 한국 시간 12:17
-    # UTC 09:17 -> 한국 시간 18:17
-    - cron: '17 4,9 * * *'
+    # 💡 UTC 3시는 한국 시간 12시, UTC 9시는 한국 시간 18시입니다.
+    - cron: '17 3,9 * * *'
   workflow_dispatch:
 
 jobs:
@@ -84,9 +82,9 @@ jobs:
             cat total_scan_list.txt | httpx -sc -silent -t 200 -timeout 2 -retries 0 -no-color > live_results.txt
           fi
 
-          # 4. 리포트 조립
+          # 4. 신규 리포트 조립
           REPORT_FILE="New_Subdomains_Report.txt"
-          echo "========= 🚀 종합 자산 식별 리포트 =========" > $REPORT_FILE
+          echo "========= 🚀 신규 자산 식별 리포트 =========" > $REPORT_FILE
           echo "스캔 일시: $(date)" >> $REPORT_FILE
           echo "============================================" >> $REPORT_FILE
 
@@ -124,16 +122,37 @@ jobs:
             rm -f temp_subs.txt
           done < targets.txt
 
-          # 디스코드 파일 전송
+          # 💡 [알아서 최적화 기능 추가]: 누적 히스토리 종합 파일 실시간 생성
+          HISTORY_FILE="All_Subdomains_History.txt"
+          echo "========= 🗂️ 누적 서브도메인 종합 리스트 =========" > $HISTORY_FILE
+          echo "최종 동기화: $(date)" >> $HISTORY_FILE
+          echo "총 자산 개수: $(wc -l < domains_old.txt | xargs)개" >> $HISTORY_FILE
+          echo "==================================================" >> $HISTORY_FILE
+          echo "" >> $HISTORY_FILE
+          
+          # 루트 도메인별로 이쁘게 분류해서 종합 파일에 저장
+          while read -r root; do
+            root=$(echo "$root" | xargs)
+            [ -z "$root" ] && continue
+            echo "📁 [Target: $root]" >> $HISTORY_FILE
+            grep -E "\.${root}$|^${root}$" domains_old.txt | sort -u | sed 's/^/  ↳ /' >> $HISTORY_FILE
+            echo "" >> $HISTORY_FILE
+          done < targets.txt
+
+          # 디스코드 파일 2개 동시 전송 (신규 리포트 + 종합 히스토리 파일)
           curl -H "Content-Type: multipart/form-data" \
-               -F "content=🔥 **[Subdomain Monitor]** 초고속 스캔 완료! 새로운 서브도메인이 발견되어 파일 리포트를 첨부합니다." \
-               -F "file=@./$REPORT_FILE" \
+               -F "content=🔥 **[Subdomain Monitor]** 스캔 완료! 신규 취약성 자산 리포트와 현재까지 모인 **종합 자산 히스토리 파일**을 함께 첨부합니다." \
+               -F "file1=@./$REPORT_FILE" \
+               -F "file2=@./$HISTORY_FILE" \
                "$DISCORD_URL" || true
+               
+          rm -f $HISTORY_FILE
         else
-          # 💡 최적화: 불안정한 notify 툴 대신, 검증된 curl 명령어로 디스코드에 생존 신고를 안전하게 보냅니다.
+          # 신규 도메인이 없을 때도 종합 자산 리스트가 보고 싶다면 디코 알림에 총 개수 표현 최적화 적용
           echo "[-] 새로 발견된 서브도메인이 없습니다."
+          TOTAL_COUNT=$(wc -l < domains_old.txt | xargs)
           curl -H "Content-Type: application/json" \
-               -d '{"content": "🔍 **[Subdomain Monitor]** 정기 스캔이 정상 작동했습니다. 새로운 서브도메인이 발견되지 않았습니다."}' \
+               -d "{\"content\": \"🔍 **[Subdomain Monitor]** 정기 스캔 완료. 새로운 서브도메인은 없습니다. (현재 누적 관리 중인 총 자산: **${TOTAL_COUNT}**개)\"}" \
                "$DISCORD_URL" || true
         fi
 
