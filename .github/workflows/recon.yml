@@ -2,7 +2,6 @@ name: BugBounty Subdomain Monitor
 
 on:
   schedule:
-    # 💡 UTC 3시는 한국 시간 12시, UTC 9시는 한국 시간 18시입니다.
     - cron: '17 3,9 * * *'
   workflow_dispatch:
 
@@ -46,8 +45,12 @@ jobs:
         if [ ! -f "domains_old.txt" ]; then
           touch domains_old.txt
         fi
+        # [최적화 신설] 민감 URL 누적을 위한 고유 DB 파일 생성
+        if [ ! -f "urls_old.txt" ]; then
+          touch urls_old.txt
+        fi
 
-        touch raw_patch.txt all_passive_urls.txt filtered_urls.txt total_scan_list.txt live_results.txt
+        touch raw_patch.txt all_passive_urls.txt filtered_urls.txt total_scan_list.txt live_results.txt raw_urls_patch.txt
 
         # 1. 서브도메인 수집
         echo "[+] 서브도메인 및 패시브 URL 수집 중..."
@@ -65,16 +68,17 @@ jobs:
           wait 
 
           if [ -s all_passive_urls.txt ]; then
+            # 민감 확장자 및 엔드포인트 필터링 후 신규 주소만 raw_urls_patch.txt에 솎아내고, 동시에 urls_old.txt에 누적
             grep -Ei "\.(env|log|bak|sql|ini|git|conf|zip|tar|gz|yaml|yml|old|bkp|pwd)$|dashboard|admin|login|portal|config|swagger|api-docs|index-of" all_passive_urls.txt \
               | grep -Eiv "\.(png|jpg|jpeg|gif|css|js|woff|woff2|svg|ico|font)$" \
-              | sort -u > filtered_urls.txt
+              | anew urls_old.txt > raw_urls_patch.txt
           fi
 
           # 3. httpx 검증
           echo "[+] 수집된 모든 자산 실시간 응답 코드 확인 중 (Batch)..."
           cat raw_patch.txt > total_scan_list.txt
-          if [ -s filtered_urls.txt ]; then
-            cat filtered_urls.txt >> total_scan_list.txt
+          if [ -s raw_urls_patch.txt ]; then
+            cat raw_urls_patch.txt >> total_scan_list.txt
           fi
           sort -u total_scan_list.txt -o total_scan_list.txt
 
@@ -82,11 +86,13 @@ jobs:
             cat total_scan_list.txt | httpx -sc -silent -t 200 -timeout 2 -retries 0 -no-color > live_results.txt
           fi
 
-          # 4. 신규 리포트 조립
+          # 4. [가독성 개선] 신규 자산 리포트 조립
           REPORT_FILE="New_Subdomains_Report.txt"
-          echo "========= 🚀 신규 자산 식별 리포트 =========" > $REPORT_FILE
-          echo "스캔 일시: $(date)" >> $REPORT_FILE
-          echo "============================================" >> $REPORT_FILE
+          echo "==================================================" > $REPORT_FILE
+          echo "🔥 🚀 [NEW] 신규 발견 자산 탐지 리포트 🚀 🔥" >> $REPORT_FILE
+          echo "==================================================" >> $REPORT_FILE
+          echo "📅 스캔 완료 일시: $(date)" >> $REPORT_FILE
+          echo "--------------------------------------------------" >> $REPORT_FILE
 
           while read -r root; do
             root=$(echo "$root" | xargs)
@@ -97,8 +103,8 @@ jobs:
             
             if [ -s temp_subs.txt ]; then
               echo "" >> $REPORT_FILE
-              echo "📌 [Root: $root]" >> $REPORT_FILE
-              echo "--------------------------------------------" >> $REPORT_FILE
+              echo "📂 [Root Target: $root]" >> $REPORT_FILE
+              echo "--------------------------------------------------" >> $REPORT_FILE
               
               while read -r sub; do
                 sub=$(echo "$sub" | xargs)
@@ -106,15 +112,15 @@ jobs:
 
                 RES=$(grep -i "^http.*$sub" live_results.txt | head -n 1)
                 if [ -z "$RES" ]; then
-                  echo "🌐 $sub [No Response]" >> $REPORT_FILE
+                  echo "  🌐 $sub ➔ [❌ No Response]" >> $REPORT_FILE
                 else
-                  echo "🌐 $RES" >> $REPORT_FILE
+                  echo "  🌐 $RES" >> $REPORT_FILE
                 fi
                 
-                if [ -s filtered_urls.txt ]; then
-                  grep -i "$sub" filtered_urls.txt | sort -u | while read -r d_url; do
+                if [ -s raw_urls_patch.txt ]; then
+                  grep -i "$sub" raw_urls_patch.txt | sort -u | while read -r d_url; do
                     D_RES=$(grep -iF "$d_url" live_results.txt | head -n 1)
-                    [ -n "$D_RES" ] && echo "   ↳ 🔍 Found: $D_RES" >> $REPORT_FILE
+                    [ -n "$D_RES" ] && echo "     ↳ 🔑 [Sensitive Endpoint] $D_RES" >> $REPORT_FILE
                   done
                 fi
               done < temp_subs.txt
@@ -122,46 +128,65 @@ jobs:
             rm -f temp_subs.txt
           done < targets.txt
 
-          # 💡 [알아서 최적화 기능 추가]: 누적 히스토리 종합 파일 실시간 생성
+          # 5. [가독성 개선] 누적 종합 자산 히스토리 파일 조립 (서브도메인 + 구글도킹/Wayback URL 통합)
           HISTORY_FILE="All_Subdomains_History.txt"
-          echo "========= 🗂️ 누적 서브도메인 종합 리스트 =========" > $HISTORY_FILE
-          echo "최종 동기화: $(date)" >> $HISTORY_FILE
-          echo "총 자산 개수: $(wc -l < domains_old.txt | xargs)개" >> $HISTORY_FILE
+          echo "==================================================" > $HISTORY_FILE
+          echo "🗂️  [ARCHIVE] 종합 자산 누적 마스터 히스토리  🗂️" >> $HISTORY_FILE
           echo "==================================================" >> $HISTORY_FILE
+          echo "⏱️  최종 동기화 시점 : $(date)" >> $HISTORY_FILE
+          echo "📊  누적 서브도메인  : $(wc -l < domains_old.txt | xargs) 개" >> $HISTORY_FILE
+          echo "📊  누적 민감 URL    : $(wc -l < urls_old.txt | xargs) 개" >> $HISTORY_FILE
+          echo "--------------------------------------------------" >> $HISTORY_FILE
           echo "" >> $HISTORY_FILE
           
-          # 루트 도메인별로 이쁘게 분류해서 종합 파일에 저장
           while read -r root; do
             root=$(echo "$root" | xargs)
             [ -z "$root" ] && continue
-            echo "📁 [Target: $root]" >> $HISTORY_FILE
-            grep -E "\.${root}$|^${root}$" domains_old.txt | sort -u | sed 's/^/  ↳ /' >> $HISTORY_FILE
+            
+            echo "📁 [TARGET SCOPE] ➔ $root" >> $HISTORY_FILE
+            echo "================================================--" >> $HISTORY_FILE
+            
+            echo "  🔹 [Subdomains]" >> $HISTORY_FILE
+            grep -E "\.${root}$|^${root}$" domains_old.txt | sort -u | sed 's/^/    ↳ /' >> $HISTORY_FILE
+            
+            echo "" >> $HISTORY_FILE
+            echo "  🔹 [Passive URLs History (Google Dork / Wayback)]" >> $HISTORY_FILE
+            if [ -s urls_old.txt ]; then
+              grep -i "$root" urls_old.txt | sort -u | sed 's/^/    ↳ ⏳ /' >> $HISTORY_FILE
+            else
+              echo "    (누적된 내역 없음)" >> $HISTORY_FILE
+            fi
+            echo "" >> $HISTORY_FILE
+            echo "--------------------------------------------------" >> $HISTORY_FILE
             echo "" >> $HISTORY_FILE
           done < targets.txt
 
-          # 디스코드 파일 2개 동시 전송 (신규 리포트 + 종합 히스토리 파일)
+          # 디스코드 파일 2개 동시 전송
           curl -H "Content-Type: multipart/form-data" \
-               -F "content=🔥 **[Subdomain Monitor]** 스캔 완료! 신규 취약성 자산 리포트와 현재까지 모인 **종합 자산 히스토리 파일**을 함께 첨부합니다." \
+               -F "content=🔥 **[Subdomain Monitor]** 스캔 완료! 가독성을 높인 신규 자산 리포트와 **서브도메인+Wayback 내역이 총망라된 누적 종합 히스토리 파일**을 첨부합니다." \
                -F "file1=@./$REPORT_FILE" \
                -F "file2=@./$HISTORY_FILE" \
                "$DISCORD_URL" || true
                
           rm -f $HISTORY_FILE
         else
-          # 신규 도메인이 없을 때도 종합 자산 리스트가 보고 싶다면 디코 알림에 총 개수 표현 최적화 적용
+          # 신규 도메인이 없을 때 디코 메시지 가독성 업그레이드
           echo "[-] 새로 발견된 서브도메인이 없습니다."
-          TOTAL_COUNT=$(wc -l < domains_old.txt | xargs)
+          SUB_COUNT=$(wc -l < domains_old.txt | xargs)
+          URL_COUNT=$(wc -l < urls_old.txt | xargs)
+          
           curl -H "Content-Type: application/json" \
-               -d "{\"content\": \"🔍 **[Subdomain Monitor]** 정기 스캔 완료. 새로운 서브도메인은 없습니다. (현재 누적 관리 중인 총 자산: **${TOTAL_COUNT}**개)\"}" \
+               -d "{\"content\": \"🔍 **[Subdomain Monitor]** 정기 스캔 완료.\n🟢 새로운 자산이 발견되지 않았습니다.\n📊 **[현재 누적 관리 자산 풀]** 서브도메인: **${SUB_COUNT}개** | 민감 URL: **${URL_COUNT}개**\"}" \
                "$DISCORD_URL" || true
         fi
 
-        rm -f raw_patch.txt all_passive_urls.txt filtered_urls.txt total_scan_list.txt live_results.txt temp_subs.txt New_Subdomains_Report.txt || true
+        rm -f raw_patch.txt all_passive_urls.txt filtered_urls.txt total_scan_list.txt live_results.txt temp_subs.txt New_Subdomains_Report.txt raw_urls_patch.txt || true
 
     - name: Commit & Push
       run: |
         git config --local user.email "actions@github.com"
         git config --local user.name "GitHub Actions"
-        git add domains_old.txt
-        git commit -m "Update domains [skip ci]" || echo "No changes to commit"
+        # urls_old.txt 파일도 깃허브 저장소에 영구 누적되도록 추가 관리
+        git add domains_old.txt urls_old.txt
+        git commit -m "Update domains and urls archive [skip ci]" || echo "No changes to commit"
         git push || echo "Git push failed"
