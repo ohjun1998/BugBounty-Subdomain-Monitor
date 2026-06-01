@@ -641,3 +641,15 @@ monitor.api.chzzk.naver.com
 shop.chzzk.naver.com
 vpn.api.chzzk.naver.com
 gateway.api.chzzk.naver.com
+help.dev.adcenter.shopping.naver.com
+conversion.shopping.naver.com
+wcs.cr.shopping.naver.com
+www.wcs.cr2.shopping.naver.com
+help.stg.adcenter.shopping.naver.com
+www.adcenter.shopping.naver.com
+beta.help.shopping.naver.com
+alpha.help.shopping.naver.com
+nsh2.shopping.naver.com
+sec.nvadmin.shopping.naver.com
+dev.spapi.shopping.naver.com
+wcs.cr2.shopping.naver.com
