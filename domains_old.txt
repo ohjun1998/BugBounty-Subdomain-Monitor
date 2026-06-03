@@ -691,3 +691,8 @@ secure.contact.naver.com
 m.dev.contact.naver.com
 dev.api.contact.naver.com
 dev.contact.naver.com
+upphoto.cafe.naver.com
+shopsquare.shopping.naver.com
+se.mail.naver.com
+main.memo.naver.com
+api.memo.naver.com

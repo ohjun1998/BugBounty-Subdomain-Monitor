@@ -397,3 +397,8 @@ https://serieson.naver.com/v3/search?query=yy777%20casino%20login%20register%20[
 https://serieson.naver.com/v3/search?query=yy777%20casino%20login%20register[%20789VIPWIN.com%20]
 https://serieson.naver.com/v3/search?query=yy777%20casino%20login[%20789VIPWIN.com%20]
 https://m.serieson.naver.com/.well-known/openid-configuration
+https://new.smartplace.naver.com/graphql?opName=GetProgramFeePromotionConfig
+https://vibe.naver.com/.env
+https://vibe.naver.com/.well-known/openid-configuration
+https://vibe.naver.com/about/?utm_source=naver_main&utm_medium=naver_main_login_n&utm_campaign=naver_main_redirect
+https://vibe.naver.com/search?query=%EC%A7%80%EC%98%A4%EB%A9%94%ED%8A%B8%EB%A6%AC+%EC%84%B8%EC%9D%B4%EB%B8%8C%ED%8C%8C%EC%9D%BC.zip
