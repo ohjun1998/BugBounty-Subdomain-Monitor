@@ -696,3 +696,4 @@ shopsquare.shopping.naver.com
 se.mail.naver.com
 main.memo.naver.com
 api.memo.naver.com
+remote.pay.naver.com
