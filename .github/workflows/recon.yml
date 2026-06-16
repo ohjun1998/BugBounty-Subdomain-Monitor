@@ -65,7 +65,7 @@ jobs:
         echo "[+] 서브도메인 및 패시브 URL 수집 중..."
         subfinder -dL ../targets.txt -silent | anew domains_old.txt > raw_patch.txt
         
-        # 2. 분석 진입
+        # 2. 분석 진입 (신규 자산이 있을 때만 심층 분석 실행)
         if [ -s raw_patch.txt ]; then
           while read -r root; do
             root=$(echo "$root" | xargs)
@@ -135,60 +135,64 @@ jobs:
             fi
             rm -f temp_subs.txt
           done < ../targets.txt
+        fi
 
-          # 5. 누적 종합 자산 히스토리 파일 조립 (전체 로직 복구 완료)
-          HISTORY_FILE="All_Subdomains_History.txt"
-          echo "==================================================" > $HISTORY_FILE
-          echo "🗂️  [ARCHIVE] 종합 자산 누적 마스터 히스토리  🗂️" >> $HISTORY_FILE
-          echo "==================================================" >> $HISTORY_FILE
-          echo "⏱️  최종 동기화 시점 : $(date)" >> $HISTORY_FILE
-          echo "📊  누적 서브도메인  : $(wc -l < domains_old.txt | xargs) 개" >> $HISTORY_FILE
-          echo "📊  누적 민감 URL    : $(wc -l < urls_old.txt | xargs) 개" >> $HISTORY_FILE
+        # 5. [수정됨] 누적 종합 자산 히스토리 파일 조립 (신규 발견 여부와 상관없이 무조건 실행)
+        HISTORY_FILE="All_Subdomains_History.txt"
+        echo "==================================================" > $HISTORY_FILE
+        echo "🗂️  [ARCHIVE] 종합 자산 누적 마스터 히스토리  🗂️" >> $HISTORY_FILE
+        echo "==================================================" >> $HISTORY_FILE
+        echo "⏱️  최종 동기화 시점 : $(date)" >> $HISTORY_FILE
+        echo "📊  누적 서브도메인  : $(wc -l < domains_old.txt | xargs) 개" >> $HISTORY_FILE
+        echo "📊  누적 민감 URL    : $(wc -l < urls_old.txt | xargs) 개" >> $HISTORY_FILE
+        echo "--------------------------------------------------" >> $HISTORY_FILE
+        echo "" >> $HISTORY_FILE
+        
+        while read -r root; do
+          root=$(echo "$root" | xargs)
+          [ -z "$root" ] && continue
+          
+          echo "📁 [TARGET SCOPE] ➔ $root" >> $HISTORY_FILE
+          echo "================================================--" >> $HISTORY_FILE
+          
+          echo "  🔹 [Subdomains]" >> $HISTORY_FILE
+          grep -E "\.${root}$|^${root}$" domains_old.txt | sort -u | sed 's/^/    ↳ /' >> $HISTORY_FILE
+          
+          echo "" >> $HISTORY_FILE
+          echo "  🔹 [Passive URLs History (Google Dork / Wayback)]" >> $HISTORY_FILE
+          if [ -s urls_old.txt ]; then
+            grep -i "$root" urls_old.txt | sort -u | sed 's/^/    ↳ ⏳ /' >> $HISTORY_FILE
+          else
+            echo "    (누적된 내역 없음)" >> $HISTORY_FILE
+          fi
+          echo "" >> $HISTORY_FILE
           echo "--------------------------------------------------" >> $HISTORY_FILE
           echo "" >> $HISTORY_FILE
-          
-          while read -r root; do
-            root=$(echo "$root" | xargs)
-            [ -z "$root" ] && continue
-            
-            echo "📁 [TARGET SCOPE] ➔ $root" >> $HISTORY_FILE
-            echo "================================================--" >> $HISTORY_FILE
-            
-            echo "  🔹 [Subdomains]" >> $HISTORY_FILE
-            grep -E "\.${root}$|^${root}$" domains_old.txt | sort -u | sed 's/^/    ↳ /' >> $HISTORY_FILE
-            
-            echo "" >> $HISTORY_FILE
-            echo "  🔹 [Passive URLs History (Google Dork / Wayback)]" >> $HISTORY_FILE
-            if [ -s urls_old.txt ]; then
-              grep -i "$root" urls_old.txt | sort -u | sed 's/^/    ↳ ⏳ /' >> $HISTORY_FILE
-            else
-              echo "    (누적된 내역 없음)" >> $HISTORY_FILE
-            fi
-            echo "" >> $HISTORY_FILE
-            echo "--------------------------------------------------" >> $HISTORY_FILE
-            echo "" >> $HISTORY_FILE
-          done < ../targets.txt
+        done < ../targets.txt
 
-          # 디스코드 파일 전송
+        # 6. [수정됨] 디스코드 파일 전송 분기
+        SUB_COUNT=$(wc -l < domains_old.txt | xargs)
+        URL_COUNT=$(wc -l < urls_old.txt | xargs)
+
+        if [ -s raw_patch.txt ]; then
+          # 신규 자산이 있을 때: 리포트 파일과 누적 히스토리 파일 모두 전송
+          REPORT_FILE="New_Subdomains_Report.txt"
           curl -H "Content-Type: multipart/form-data" \
                -F "content=🔥 **[Subdomain Monitor]** 스캔 완료! 신규 자산 리포트 및 마스터 히스토리를 첨부합니다." \
                -F "file1=@./$REPORT_FILE" \
                -F "file2=@./$HISTORY_FILE" \
                "$DISCORD_URL" || true
-               
-          rm -f $HISTORY_FILE
         else
-          echo "[-] 새로 발견된 서브도메인이 없습니다."
-          SUB_COUNT=$(wc -l < domains_old.txt | xargs)
-          URL_COUNT=$(wc -l < urls_old.txt | xargs)
-          
-          curl -H "Content-Type: application/json" \
-               -d "{\"content\": \"🔍 **[Subdomain Monitor]** 정기 스캔 완료.\n🟢 새로운 자산이 발견되지 않았습니다.\n📊 **[현재 누적 관리 자산 풀]** 서브도메인: **${SUB_COUNT}개** | 민감 URL: **${URL_COUNT}개**\"}" \
+          # 신규 자산이 없을 때: 텍스트 요약과 함께 누적 히스토리 파일만 전송
+          echo "[-] 새로 발견된 서브도메인이 없습니다. (누적 파일만 전송)"
+          curl -H "Content-Type: multipart/form-data" \
+               -F "content=🔍 **[Subdomain Monitor]** 정기 스캔 완료.\n🟢 새로운 자산이 발견되지 않았습니다.\n📊 **[현재 누적 관리 자산 풀]** 서브도메인: **${SUB_COUNT}개** | 민감 URL: **${URL_COUNT}개**" \
+               -F "file1=@./$HISTORY_FILE" \
                "$DISCORD_URL" || true
         fi
 
-        # 잔여 파일 정리 (데이터 레포지토리 내의 임시파일과 부모 폴더의 타겟 파일 삭제)
-        rm -f raw_patch.txt all_passive_urls.txt filtered_urls.txt total_scan_list.txt live_results.txt temp_subs.txt New_Subdomains_Report.txt raw_urls_patch.txt ../targets.txt || true
+        # 잔여 파일 정리
+        rm -f raw_patch.txt all_passive_urls.txt filtered_urls.txt total_scan_list.txt live_results.txt temp_subs.txt New_Subdomains_Report.txt raw_urls_patch.txt ../targets.txt $HISTORY_FILE || true
 
     - name: Commit & Push to Private Repo
       run: |
